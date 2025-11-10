@@ -1,0 +1,314 @@
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ==================== USER MODELS ====================
+
+model User {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  email                 String    @unique
+  name                  String?
+  password              String
+  image                 String?
+  emailVerified         DateTime?
+  
+  // Role and Permissions
+  role                  UserRole  @default(USER)
+  permissions           String[]  @default([])
+  
+  // Subscription Info
+  subscription          Subscription?
+  subscriptionHistory   SubscriptionHistory[]
+  
+  // Billing
+  billingAddress        String?
+  billingCity           String?
+  billingState          String?
+  billingZip            String?
+  billingCountry        String?
+  
+  // Payment Method
+  stripeCustomerId      String?   
+  paymentMethods        PaymentMethod[]
+  
+  // Usage
+  usageRecords          UsageRecord[]
+  
+  // Requests
+  refundRequests        RefundRequest[]
+  
+  // Audit
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  lastLogin             DateTime?
+  
+  // Relations
+  invoices              Invoice[]
+  sessions              Session[]
+  auditLogs             AuditLog[]
+}
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+model Session {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  sessionToken          String    @unique
+  userId                String    @db.ObjectId
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expires               DateTime
+  
+  createdAt             DateTime  @default(now())
+}
+
+// ==================== SUBSCRIPTION MODELS ====================
+
+model SubscriptionTier {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  name                  String    @unique
+  description           String
+  priceMonthly          Float
+  priceYearly           Float?
+  
+  // Features - Explicit many-to-many for MongoDB
+  features              FeaturesOnTiers[]
+  
+  // Limits
+  maxUsers              Int?
+  maxProjects           Int?
+  maxApiCalls           Int?
+  maxStorageGB          Float
+  
+  // Status
+  isActive              Boolean   @default(true)
+  
+  // Order
+  displayOrder          Int       @default(0)
+  
+  // Relations
+  subscriptions         Subscription[]
+  
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+model Feature {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  name                  String
+  description           String?
+  
+  // Explicit many-to-many for MongoDB
+  subscriptionTiers     FeaturesOnTiers[]
+  
+  createdAt             DateTime  @default(now())
+}
+
+// Explicit many-to-many relation table for MongoDB
+model FeaturesOnTiers {
+  id                String           @id @default(auto()) @map("_id") @db.ObjectId
+  subscriptionTier  SubscriptionTier @relation(fields: [subscriptionTierId], references: [id], onDelete: Cascade)
+  subscriptionTierId String           @db.ObjectId
+  feature           Feature          @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  featureId         String           @db.ObjectId
+  
+  createdAt DateTime @default(now())
+  
+  @@unique([subscriptionTierId, featureId])
+}
+
+model Subscription {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId                String    @unique @db.ObjectId
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  tierId                String    @db.ObjectId
+  tier                  SubscriptionTier @relation(fields: [tierId], references: [id])
+  
+  // Dates
+  startDate             DateTime  @default(now())
+  renewalDate           DateTime
+  trialEndsAt           DateTime?
+  
+  // Status
+  status                SubscriptionStatus @default(ACTIVE)
+  billingCycle          BillingCycle @default(MONTHLY)
+  
+  // Stripe
+  stripeSubscriptionId  String?   @unique
+  
+  // Usage
+  currentUsage          Int       @default(0)
+  
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  PAUSED
+  CANCELLED
+  EXPIRED
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+model SubscriptionHistory {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId                String    @db.ObjectId
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  previousTierId        String?   @db.ObjectId
+  newTierId             String    @db.ObjectId
+  
+  action                SubscriptionAction
+  reason                String?
+  
+  prorationAmount       Float     @default(0)
+  
+  createdAt             DateTime  @default(now())
+}
+
+enum SubscriptionAction {
+  UPGRADE
+  DOWNGRADE
+  PAUSE
+  RESUME
+  CANCEL
+  REACTIVATE
+}
+
+// ==================== BILLING MODELS ====================
+
+model Invoice {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  invoiceNumber         String    @unique
+  userId                String    @db.ObjectId
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Amount
+  subtotal              Float
+  tax                   Float     @default(0)
+  discount              Float     @default(0)
+  total                 Float
+  
+  // Details
+  description           String?
+  periodStart           DateTime
+  periodEnd             DateTime
+  
+  // Status
+  status                InvoiceStatus @default(PENDING)
+  
+  // Stripe
+  stripeInvoiceId       String?   @unique
+  
+  // Dates
+  dueDate               DateTime?
+  paidAt                DateTime?
+  
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+enum InvoiceStatus {
+  PENDING
+  SENT
+  PAID
+  FAILED
+  CANCELLED
+}
+
+model PaymentMethod {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId                String    @db.ObjectId
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Stripe
+  stripePaymentMethodId String    @unique
+  
+  // Details
+  type                  String
+  cardBrand             String?
+  cardLast4             String?
+  cardExpMonth          Int?
+  cardExpYear           Int?
+  
+  // Status
+  isDefault             Boolean   @default(false)
+  
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+// ==================== USAGE MODELS ====================
+
+model UsageRecord {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId                String    @db.ObjectId
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  metric                String    // e.g., "API_CALLS", "STORAGE_GB"
+  value                 Float
+  
+  timestamp             DateTime  @default(now())
+}
+
+// ==================== REFUND MODELS ====================
+
+model RefundRequest {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId                String    @db.ObjectId
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  invoiceId             String?
+  amount                Float
+  
+  reason                String
+  status                RefundStatus @default(PENDING)
+  
+  stripeRefundId        String?   @unique
+  adminNotes            String?
+  
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REFUNDED
+  CANCELLED
+}
+
+// ==================== AUDIT MODELS ====================
+
+model AuditLog {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId                String?   @db.ObjectId
+  user                  User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  action                String
+  entity                String
+  entityId              String?
+  
+  oldValues             String?   // JSON string
+  newValues             String?   // JSON string
+  
+  ipAddress             String?
+  userAgent             String?
+  
+  createdAt             DateTime  @default(now())
+}
