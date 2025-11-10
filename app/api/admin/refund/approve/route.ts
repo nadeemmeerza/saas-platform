@@ -2,10 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { stripe } from '@/lib/stripe';
 import { sendRefundApprovedEmail } from '@/lib/email';
-import { getUserRole, requirePermission } from '@/lib/rbac';
+import { requirePermission } from '@/lib/rbac';
+import { getAuthToken, verifyToken } from '@/lib/auth';
 
 export async function POST(request: NextRequest) {
-  const role = getUserRole();
+  const token = await getAuthToken();
+  const userData = verifyToken(token as string);
+
+  const role = userData.role;
   
   try {
     requirePermission(role!, 'manage_billing');

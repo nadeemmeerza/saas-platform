@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getUserId } from '@/lib/rbac';
+import { getAuthToken, verifyToken } from '@/lib/auth';
 
 export async function GET(request: NextRequest) {
-  const userId = getUserId();
+  const token = await getAuthToken();
+  const userData = verifyToken(token as string)
+
+  const userId = userData.id;
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }

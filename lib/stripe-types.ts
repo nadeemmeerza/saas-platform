@@ -12,7 +12,11 @@ import Stripe from 'stripe';
  * @returns Date object or null
  */
 export function unixToDate(timestamp: number | null | undefined): Date | null {
-  if (!timestamp || typeof timestamp !== 'number') {
+  // 0 is a valid unix timestamp; only treat null/undefined as no-value.
+  if (timestamp === null || timestamp === undefined) {
+    return null;
+  }
+  if (typeof timestamp !== 'number') {
     return null;
   }
   return new Date(timestamp * 1000);
@@ -50,13 +54,14 @@ export function extractSubscriptionData(
   return {
     id: subscription.id,
     status: subscription.status,
-    customerId: subscription.customer as string,
-    currentPeriodStart: unixToDate(subscription.perio as number),
-    currentPeriodEnd: unixToDate(subscription.current_period_end as number),
-    trialEnd: unixToDate(subscription.trial_end as number),
-    trialStart: unixToDate(subscription.trial_start as number),
-    cancelAt: unixToDate(subscription.cancel_at as number),
-    canceledAt: unixToDate(subscription.canceled_at as number),
+    customerId: typeof subscription.customer === 'string' ? subscription.customer : (subscription.customer?.id ?? '') as string,
+    // subscription has top-level current_period_start/current_period_end
+    currentPeriodStart: unixToDate(subscription.current_period_start as number | null | undefined),
+    currentPeriodEnd: unixToDate(subscription.current_period_end as number | null | undefined),
+    trialEnd: unixToDate(subscription.trial_end as number | null | undefined),
+    trialStart: unixToDate(subscription.trial_start as number | null | undefined),
+    cancelAt: unixToDate(subscription.cancel_at as number | null | undefined),
+    canceledAt: unixToDate(subscription.canceled_at as number | null | undefined),
     createdAt: unixToDate(subscription.created as number) || new Date(),
     metadata: subscription.metadata as Record<string, string> | undefined,
   };
@@ -68,7 +73,7 @@ export function extractSubscriptionData(
 export interface SafeStripeInvoice {
   id: string;
   number: string | null;
-  customerId: string;
+  customerId: string | null;
   subscriptionId: string | null;
   amount: number;
   amountDue: number;
@@ -88,26 +93,49 @@ export interface SafeStripeInvoice {
 }
 
 export function extractInvoiceData(invoice: Stripe.Invoice): SafeStripeInvoice {
+  // Try to get a sensible "amount" (prefer invoice.amount if present; fall back to total)
+  const rawAmount = (invoice as any).amount ?? invoice.total ?? 0;
+  const amount = typeof rawAmount === 'number' ? rawAmount / 100 : 0;
+
+  const amountDue = typeof invoice.amount_due === 'number' ? invoice.amount_due / 100 : 0;
+  const amountPaid = typeof invoice.amount_paid === 'number' ? invoice.amount_paid / 100 : 0;
+  const subtotal = typeof invoice.subtotal === 'number' ? invoice.subtotal / 100 : 0;
+  const total = typeof invoice.total === 'number' ? invoice.total / 100 : 0;
+
+  // attempt to pull period from invoice.lines first item (safe guard)
+  const periodStartRaw =
+    (invoice.lines && Array.isArray((invoice.lines as any).data) && (invoice.lines as any).data[0]?.period?.start) ??
+    (invoice.period_start as number | null | undefined);
+  const periodEndRaw =
+    (invoice.lines && Array.isArray((invoice.lines as any).data) && (invoice.lines as any).data[0]?.period?.end) ??
+    (invoice.period_end as number | null | undefined);
+
+  const currency = (invoice.currency ?? 'USD').toString().toUpperCase();
+
+  // paidAt may be in status_transitions or a top-level field depending on SDK version
+  const paidAtRaw =
+    (invoice.status_transitions as any)?.paid_at ?? (invoice as any).paid_at ?? null;
+
   return {
     id: invoice.id,
-    number: invoice.number,
-    customerId: invoice.customer as string,
-    subscriptionId: invoice.subscription as string | null,
-    amount: invoice.amount ? invoice.amount / 100 : 0,
-    amountDue: invoice.amount_due ? invoice.amount_due / 100 : 0,
-    amountPaid: invoice.amount_paid ? invoice.amount_paid / 100 : 0,
-    subtotal: invoice.subtotal ? invoice.subtotal / 100 : 0,
-    tax: invoice.tax ? invoice.tax / 100 : null,
-    total: invoice.total ? invoice.total / 100 : 0,
-    currency: invoice.currency.toUpperCase(),
-    status: invoice.status || 'unknown',
-    paid: invoice.paid,
-    periodStart: unixToDate(invoice.period_start),
-    periodEnd: unixToDate(invoice.period_end),
-    createdAt: unixToDate(invoice.created) || new Date(),
-    dueDate: unixToDate(invoice.due_date),
-    paidAt: unixToDate(invoice.paid_at),
-    description: invoice.description,
+    number: invoice.number ?? null,
+    customerId: typeof invoice.customer === 'string' ? (invoice.customer as string) : (invoice.customer?.id ?? null),
+    subscriptionId: typeof invoice.subscription === 'string' ? invoice.subscription : (invoice.subscription ?? null) as string | null,
+    amount,
+    amountDue,
+    amountPaid,
+    subtotal,
+    tax: null, // Stripe provides automatic_tax object; adapt here if you want a specific tax amount
+    total,
+    currency,
+    status: invoice.status ?? 'unknown',
+    paid: Boolean(invoice.paid),
+    periodStart: unixToDate(periodStartRaw),
+    periodEnd: unixToDate(periodEndRaw),
+    createdAt: unixToDate(invoice.created as number) || new Date(),
+    dueDate: unixToDate(invoice.due_date as number | null | undefined),
+    paidAt: unixToDate(paidAtRaw as number | null | undefined),
+    description: invoice.description ?? null,
   };
 }
 
@@ -129,12 +157,12 @@ export interface SafeStripeCharge {
 export function extractChargeData(charge: Stripe.Charge): SafeStripeCharge {
   return {
     id: charge.id,
-    amount: charge.amount ? charge.amount / 100 : 0,
-    currency: charge.currency.toUpperCase(),
-    status: charge.status,
-    paid: charge.paid,
-    refunded: charge.refunded,
-    refundedAmount: charge.amount_refunded ? charge.amount_refunded / 100 : 0,
+    amount: typeof charge.amount === 'number' ? charge.amount / 100 : 0,
+    currency: (charge.currency ?? 'USD').toString().toUpperCase(),
+    status: charge.status ?? 'unknown',
+    paid: Boolean(charge.paid),
+    refunded: Boolean(charge.refunded),
+    refundedAmount: typeof charge.amount_refunded === 'number' ? charge.amount_refunded / 100 : 0,
     createdAt: unixToDate(charge.created as number) || new Date(),
     metadata: charge.metadata as Record<string, string> | undefined,
   };
@@ -158,11 +186,11 @@ export function extractCustomerData(
 ): SafeStripeCustomer {
   return {
     id: customer.id,
-    email: customer.email,
-    name: customer.name,
-    phone: customer.phone,
+    email: customer.email ?? null,
+    name: customer.name ?? null,
+    phone: customer.phone ?? null,
     createdAt: unixToDate(customer.created as number) || new Date(),
-    defaultSourceId: customer.default_source as string | null,
+    defaultSourceId: typeof customer.default_source === 'string' ? customer.default_source : (customer.default_source?.id ?? null) as string | null,
     metadata: customer.metadata as Record<string, string> | undefined,
   };
 }
@@ -184,11 +212,11 @@ export interface SafeStripeRefund {
 export function extractRefundData(refund: Stripe.Refund): SafeStripeRefund {
   return {
     id: refund.id,
-    chargeId: refund.charge as string | null,
-    amount: refund.amount ? refund.amount / 100 : 0,
-    currency: refund.currency.toUpperCase(),
-    status: refund.status || 'unknown',
-    reason: refund.reason,
+    chargeId: typeof refund.charge === 'string' ? refund.charge : (refund.charge?.id ?? null) as string | null,
+    amount: typeof refund.amount === 'number' ? refund.amount / 100 : 0,
+    currency: (refund.currency ?? 'USD').toString().toUpperCase(),
+    status: refund.status ?? 'unknown',
+    reason: refund.reason ?? null,
     createdAt: unixToDate(refund.created as number) || new Date(),
     metadata: refund.metadata as Record<string, string> | undefined,
   };
@@ -303,15 +331,29 @@ export function formatCurrency(
 
 /**
  * Validate Stripe webhook signature
+ *
+ * IMPORTANT: you must pass an initialized Stripe SDK instance (with your secret key)
+ * so that constructEvent can verify the signature correctly.
+ *
+ * @param body - raw request body (Buffer or string) exactly as received
+ * @param signature - value of the 'stripe-signature' header
+ * @param webhookSecret - the webhook signing secret from Stripe
+ * @param stripeSdk - initialized Stripe instance (new Stripe(process.env.STRIPE_SECRET, {...}))
  */
 export function isValidStripeEvent(
-  body: string,
+  body: Buffer | string,
   signature: string,
-  webhookSecret: string
+  webhookSecret: string,
+  stripeSdk: Stripe
 ): boolean {
+  if (!signature || !webhookSecret) {
+    console.error('Missing signature or webhookSecret for Stripe event verification');
+    return false;
+  }
+
   try {
-    // This will throw if signature is invalid
-    // Actual verification happens in stripe.webhooks.constructEvent()
+    // will throw if invalid
+    stripeSdk.webhooks.constructEvent(body, signature, webhookSecret);
     return true;
   } catch (error) {
     console.error('Invalid webhook signature:', error);
